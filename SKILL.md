@@ -2,17 +2,20 @@
 name: a-stock-data
 description: A股全栈数据工具包 — 覆盖行情(mootdx+腾讯+百度K线)、研报(东财+同花顺+iwencai)、信号(同花顺热点+北向+龙虎榜+解禁+行业)、资金面(融资融券+大宗交易+股东户数+分红+资金流分钟级+资金流120日)、新闻(东财个股+全球资讯)、基础数据(mootdx财务/F10+东财+新浪三表)、公告(巨潮)七层数据源，内嵌全部调用代码，自包含零依赖外部文件。优先用通达信(mootdx)/腾讯(不封IP)，东财接口已内置限流防封。适用于个股估值、研报检索、题材归因、龙虎榜跟踪、解禁预警、行业轮动、融资融券跟踪、筹码分析、产业链调研、批量筛选等场景。
 origin: custom
-version: 3.2.2
+version: 3.2.3
 ---
 
 > 📦 项目主页：https://github.com/simonlin1212/a-stock-data — 更新、反馈、支持作者
 > 
 > 作者：Simon 林 · 抖音「Simon林」· 公众号「硅基世纪」
 
-# A股全栈数据工具包 V3.2.2
+# A股全栈数据工具包 V3.2.3
 
 七层数据架构，27 个端点实测可用（2026-06 验证；财联社快讯已下线，详见 §5.2），覆盖主板/中小板/科创板/ST。
 
+> **V3.2.3（腾讯 ETF 前缀修复）：**
+> - **§1.2 腾讯财经 ETF/指数前缀规则**：旧 `tencent_quote()` 只按股票首位判断市场，导致沪市 ETF（如 `510050`、`510300`）被错误请求为 `sz510xxx` 返回空；同时裸 `000001`/`000300` 指数示例也易与深市个股混淆。新增 `_tencent_prefix()`，支持显式 `sh/sz/bj` 前缀、`.SH/.SZ/.BJ` 后缀，并按常见 A 股规则推断：沪市股票/ETF/科创ETF/指数 → `sh`，深市股票/ETF/指数 → `sz`，北交所 → `bj`。
+>
 > **V3.2.2（失效接口替换 + 隐藏 Bug 修复）：**
 > - **§3.3 概念板块归属（#18）**：百度 PAE `getrelatedblock` 失效（`ResultCode 10003` + 空数组）→ 改用东财 `slist`（`spt=3`）`eastmoney_concept_blocks()`，一次请求拿全个股所属板块（行业/概念/地域 + BK码 + 涨跌幅 + 龙头股），零鉴权走 `em_get` 限流。
 > - **§7.1 巨潮公告 orgId（#19）**：硬编码 `gssx0{code}` 致大量 601xxx 股票 `totalAnnouncement=0` → 新增 `_cninfo_orgid()` 动态查官方映射表 `szse_stock.json`（6198 只股，模块级缓存），硬编码降为 fallback。
@@ -295,22 +298,50 @@ HTTP GET，GBK 编码，`~` 分隔 88 个字段，不封IP。
 ```python
 import urllib.request
 
+def _tencent_prefix(code: str) -> str:
+    """归一化为腾讯财经代码前缀格式: sh/sz/bj + 6位代码。
+    支持显式输入: sh510300 / 510300.SH / SZ000001 / 159915.SZ。
+    裸代码按常见 A 股规则推断，沪市 ETF(51/58/56)、沪市指数(000001/000300)
+    会正确走 sh，避免误请求为 sz510xxx。"""
+    c = code.strip().lower()
+    if c.startswith(("sh", "sz", "bj")) and len(c) == 8:
+        return c
+
+    if "." in c:
+        raw, suffix = c.split(".", 1)
+        if suffix in ("sh", "ss"):
+            return f"sh{raw}"
+        if suffix == "sz":
+            return f"sz{raw}"
+        if suffix == "bj":
+            return f"bj{raw}"
+        c = raw
+
+    # 北交所
+    if c.startswith(("8", "4")):
+        return f"bj{c}"
+
+    # 沪市股票/基金/ETF/指数
+    if (
+        c.startswith(("6", "9"))
+        or c.startswith(("50", "51", "52", "56", "58"))
+        or c in {"000001", "000016", "000300", "000905", "000852"}
+    ):
+        return f"sh{c}"
+
+    # 深市股票/ETF/指数
+    return f"sz{c}"
+
 def tencent_quote(codes: list[str]) -> dict[str, dict]:
     """
     批量拉取腾讯财经实时行情。
     codes: ["688017", "300476", "002463"]
-    也支持指数: ["000001", "000300", "399006"]
-    也支持ETF: ["510050", "510300"]
+    也支持指数: ["000001", "000300", "399006"]  # 上证/沪深300/创业板指
+    也支持ETF: ["510050", "510300", "159915"]
+    如遇代码歧义，可显式传入: "sz000001" / "000001.SH" / "510300.SH"
     返回: {code: {name, price, pe_ttm, pb, mcap, ...}}
     """
-    prefixed = []
-    for c in codes:
-        if c.startswith(("6", "9")):
-            prefixed.append(f"sh{c}")
-        elif c.startswith("8"):
-            prefixed.append(f"bj{c}")
-        else:
-            prefixed.append(f"sz{c}")
+    prefixed = [_tencent_prefix(c) for c in codes]
 
     url = "https://qt.gtimg.cn/q=" + ",".join(prefixed)
     req = urllib.request.Request(url)
