@@ -358,7 +358,9 @@ def tencent_quote(codes: list[str]) -> dict[str, dict]:
         if len(vals) < 53:
             continue
         code = key[2:]
-        result[code] = {
+        result_key = code if code not in result else key
+        result[result_key] = {
+            "market":       key[:2],
             "name":         vals[1],
             "price":        float(vals[3]) if vals[3] else 0,
             "last_close":   float(vals[4]) if vals[4] else 0,
